@@ -1,0 +1,281 @@
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/dir.c b/src/dir.c
+--- a/src/dir.c	2026-11-08 15:40:47.338521644 +0800
++++ b/src/dir.c	2026-11-08 15:41:18.990785762 +0800
+@@ -1253,7 +1253,11 @@
+           /* The glob interface wants a 'struct dirent', so mock one up.  */
+           struct dirent *d;
+           size_t len = df->length + 1;
++          #ifdef __wasi__
++          size_t sz = offsetof (struct dirent, d_name) + len;
++#else
+           size_t sz = sizeof (*d) - sizeof (d->d_name) + len;
++#endif
+           if (sz > bufsz)
+             {
+               bufsz *= 2;
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/function.c b/src/function.c
+--- a/src/function.c	2026-11-08 15:40:47.338521644 +0800
++++ b/src/function.c	2026-11-08 15:42:49.447559414 +0800
+@@ -1900,6 +1900,27 @@
+       goto done;
+     }
+ 
++#elif defined(__wasi__)
++  {
++    extern int wasi_capture_command (const char *cmd_line, char *out_buf, int max_len);
++    char *buffer = xmalloc (65536);
++    int nbytes = wasi_capture_command (argv[0], buffer, 65535);
++    if (nbytes >= 0)
++      {
++        size_t i = (size_t)nbytes;
++        buffer[i] = '\0';
++        fold_newlines (buffer, &i, trim_newlines);
++        o = variable_buffer_output (o, buffer, i);
++        shell_completed (0, 0);
++      }
++    else
++      {
++        shell_completed (127, 0);
++      }
++    free (buffer);
++    goto done;
++  }
++
+ #else
+   if (pipe (pipedes) < 0)
+     {
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/job.c b/src/job.c
+--- a/src/job.c	2026-11-08 15:40:47.338521644 +0800
++++ b/src/job.c	2026-11-08 15:42:49.447559414 +0800
+@@ -1,3 +1,8 @@
++#ifdef __wasi__
++# include "wasi_compat.h"
++static pid_t wasi_pid = 1;
++static int wasi_status = 0;
++#endif
+ /* Job execution and handling for GNU Make.
+ Copyright (C) 1988-2023 Free Software Foundation, Inc.
+ This file is part of GNU Make.
+@@ -738,7 +743,7 @@
+       else
+         {
+           /* No remote children.  Check for local children.  */
+-#if !defined(__MSDOS__) && !defined(_AMIGA) && !defined(WINDOWS32)
++#if !defined(__MSDOS__) && !defined(_AMIGA) && !defined(WINDOWS32) && !defined(__wasi__)
+           if (any_local)
+             {
+ #ifdef VMS
+@@ -817,6 +822,14 @@
+           exit_sig = 0;
+           coredump = 0;
+ #endif /* _AMIGA */
++#ifdef __wasi__
++          /* Same on WASI: synchronous execution */
++          pid = wasi_pid - 1;
++          status = wasi_status;
++          exit_code = wasi_status;
++          exit_sig = 0;
++          coredump = 0;
++#endif /* __wasi__ */
+ #ifdef WINDOWS32
+           {
+             HANDLE hPID;
+@@ -1432,7 +1445,7 @@
+                                              child->file->cmds->any_recurse);
+ #endif
+ 
+-#if !defined(__MSDOS__) && !defined(_AMIGA) && !defined(WINDOWS32)
++#if !defined(__MSDOS__) && !defined(_AMIGA) && !defined(WINDOWS32) && !defined(__wasi__)
+ 
+ #ifndef VMS
+   /* start_waiting_job has set CHILD->remote if we can start a remote job.  */
+@@ -1481,7 +1494,56 @@
+ #endif /* !VMS */
+     }
+ 
+-#else   /* __MSDOS__ or Amiga or WINDOWS32 */
++#else   /* __MSDOS__ or Amiga or WINDOWS32 or __wasi__ */
++#ifdef __wasi__
++  {
++    int proc_return;
++    char *allocated_cmd = NULL;
++    const char *cmdline = NULL;
++
++    block_sigs ();
++    wasi_status = 0;
++
++    if (argv[0] && argv[1] && strcmp (argv[1], "-c") == 0 && argv[2])
++      {
++        cmdline = argv[2];
++      }
++    else if (argv[0])
++      {
++        size_t total_len = 0;
++        int i;
++        for (i = 0; argv[i]; i++)
++          total_len += strlen (argv[i]) + 1;
++        allocated_cmd = xmalloc (total_len + 1);
++        allocated_cmd[0] = '\0';
++        for (i = 0; argv[i]; i++)
++          {
++            if (i > 0)
++              strcat (allocated_cmd, " ");
++            strcat (allocated_cmd, argv[i]);
++          }
++        cmdline = allocated_cmd;
++      }
++    else
++      {
++        cmdline = "";
++      }
++
++    proc_return = wasi_run_recipe (cmdline, (const char *const *)child->environment);
++    if (allocated_cmd)
++      free (allocated_cmd);
++
++    unblock_sigs ();
++
++    if (proc_return == -1)
++      wasi_status = 0x7f;
++    else
++      wasi_status = (proc_return & 0xff);
++
++    ++dead_children;
++    child->pid = wasi_pid++;
++  }
++#endif /* __wasi__ */
+ #ifdef __MSDOS__
+   {
+     int proc_return;
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/main.c b/src/main.c
+--- a/src/main.c	2026-11-08 15:40:47.338521644 +0800
++++ b/src/main.c	2026-11-08 15:52:35.641016597 +0800
+@@ -1,3 +1,12 @@
++#ifdef __wasi__
++# define bsd_signal signal
++#endif
++#ifdef __wasi__
++# include "wasi_compat.h"
++#endif
++#ifndef LOCALEDIR
++# define LOCALEDIR ""
++#endif
+ /* Argument parsing and main program of GNU Make.
+ Copyright (C) 1988-2023 Free Software Foundation, Inc.
+ This file is part of GNU Make.
+@@ -1164,7 +1173,7 @@
+ extern char **environ;
+ #endif
+ 
+-#if defined(_AMIGA) || defined(MK_OS_ZOS)
++#if defined(_AMIGA) || defined(MK_OS_ZOS) || defined(__wasi__)
+ int
+ main (int argc, char **argv)
+ #else
+@@ -1482,7 +1491,7 @@
+      done before $(MAKE) is figured out so its definitions will not be
+      from the environment.  */
+ 
+-#ifdef MK_OS_ZOS
++#if defined(MK_OS_ZOS) || defined(__wasi__)
+   char **envp = environ;
+ #endif
+ 
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/makeint.h b/src/makeint.h
+--- a/src/makeint.h	2026-11-08 15:40:47.338521644 +0800
++++ b/src/makeint.h	2026-11-08 15:42:13.563249349 +0800
+@@ -1,3 +1,6 @@
++#ifdef __wasi__
++# include "wasi_compat.h"
++#endif
+ /* Miscellaneous global declarations and portability cruft for GNU Make.
+ Copyright (C) 1988-2023 Free Software Foundation, Inc.
+ This file is part of GNU Make.
+@@ -307,7 +310,9 @@
+ #endif
+ 
+ #if !defined(HAVE_UMASK)
++# ifndef __wasi__
+ typedef int mode_t;
++# endif
+ extern mode_t umask (mode_t);
+ #endif
+ 
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/misc.c b/src/misc.c
+--- a/src/misc.c	2026-11-08 15:40:47.338521644 +0800
++++ b/src/misc.c	2026-11-08 15:44:49.496623064 +0800
+@@ -649,6 +649,13 @@
+ static char *
+ get_tmppath ()
+ {
++#ifdef __wasi__
++  char *path = xstrdup ("/tmp/make_XXXXXX");
++  int fd = mkstemp (path);
++  if (fd >= 0)
++    close (fd);
++  return path;
++#else
+   char *path;
+ 
+ # ifdef HAVE_MKTEMP
+@@ -670,6 +677,7 @@
+ # endif
+ 
+   return path;
++#endif
+ }
+ #endif
+ 
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/os.h b/src/os.h
+--- a/src/os.h	2026-11-08 15:40:47.338521644 +0800
++++ b/src/os.h	2026-11-08 15:41:18.994785796 +0800
+@@ -20,7 +20,7 @@
+ #define IO_STDOUT_OK            0x0008
+ #define IO_STDERR_OK            0x0010
+ 
+-#if defined(VMS) || defined(_AMIGA) || defined(__MSDOS__)
++#if defined(VMS) || defined(_AMIGA) || defined(__MSDOS__) || defined(__wasi__)
+ # define check_io_state()  (IO_STDIN_OK|IO_STDOUT_OK|IO_STDERR_OK)
+ # define fd_inherit(_i)    (0)
+ # define fd_noinherit(_i)  (0)
+@@ -44,7 +44,7 @@
+ 
+ /* This section provides OS-specific functions to support the jobserver.  */
+ 
+-#ifdef MAKE_JOBSERVER
++#if defined(MAKE_JOBSERVER) && !defined(__wasi__)
+ 
+ /* Returns 1 if the jobserver is enabled, else 0.  */
+ unsigned int jobserver_enabled (void);
+@@ -111,7 +111,7 @@
+ 
+ #endif  /* MAKE_JOBSERVER */
+ 
+-#ifndef NO_OUTPUT_SYNC
++#if !defined(NO_OUTPUT_SYNC) && !defined(__wasi__)
+ 
+ /* Returns 1 if output sync is enabled, else 0.  */
+ unsigned int osync_enabled (void);
+@@ -151,7 +151,7 @@
+ #endif  /* NO_OUTPUT_SYNC */
+ 
+ /* Create a "bad" file descriptor for stdin when parallel jobs are run.  */
+-#if defined(VMS) || defined(WINDOWS32) || defined(_AMIGA) || defined(__MSDOS__)
++#if defined(VMS) || defined(WINDOWS32) || defined(_AMIGA) || defined(__MSDOS__) || defined(__wasi__)
+ # define get_bad_stdin() (-1)
+ #else
+ int get_bad_stdin (void);
+diff -ruN -x '*.o' -x config.h -x stamp-h1 a/src/posixos.c b/src/posixos.c
+--- a/src/posixos.c	2026-11-08 15:40:47.338521644 +0800
++++ b/src/posixos.c	2026-11-08 15:41:18.994785796 +0800
+@@ -1,3 +1,4 @@
++#ifndef __wasi__
+ /* POSIX-based operating system interface for GNU Make.
+ Copyright (C) 2016-2023 Free Software Foundation, Inc.
+ This file is part of GNU Make.
+@@ -894,3 +895,5 @@
+ 
+   return fd;
+ }
++
++#endif

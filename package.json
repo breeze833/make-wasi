@@ -1,0 +1,43 @@
+{
+  "name": "make-wasi",
+  "version": "4.4.1",
+  "description": "GNU Make compiled for WASI Preview 1",
+  "type": "module",
+  "main": "bin/cli.js",
+  "bin": {
+    "make-wasi": "./bin/cli.js"
+  },
+  "exports": {
+    ".": "./bin/cli.js",
+    "./host": "./src/host.js"
+  },
+  "files": [
+    "bin/cli.js",
+    "bin/make.wasm",
+    "src/host.js",
+    "README.md",
+    "LICENSE",
+    "SPEC.md",
+    "docs/HOST_FUNCTIONS.md",
+    "examples/host-reference.js"
+  ],
+  "scripts": {
+    "build": "./scripts/build.sh",
+    "test": "node test/test-make.js && node test/test-recipes.js && node examples/host-reference.js",
+    "test:make": "node test/test-make.js",
+    "test:recipes": "node test/test-recipes.js",
+    "test:host": "node examples/host-reference.js",
+    "pack": "mkdir -p dist && npm pack --pack-destination dist/"
+  },
+  "keywords": [
+    "make",
+    "gmake",
+    "gnu-make",
+    "wasi",
+    "wasip1",
+    "wasm",
+    "webassembly",
+    "build"
+  ],
+  "license": "GPL-3.0-or-later"
+}

@@ -1,0 +1,6 @@
+build/
+dist/
+bin/make.wasm
+node_modules/
+*.tgz
+.DS_Store
